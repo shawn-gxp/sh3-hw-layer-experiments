@@ -139,52 +139,7 @@ def list_profiles() -> List[DeviceProfile]:
 
 
 def get_profile(profile_id: str) -> DeviceProfile:
-    key = profile_id.strip().lower().replace("-", "_").replace(" ", "_")
-    aliases = {
-        "bm54": "beurer_bm54",
-        "beurer": "beurer_bp",
-        "beurer_bm54": "beurer_bm54",
-        "bp_sig": "beurer_bp",
-        "glucose": "beurer_glucose",
-        "glucose_sig": "beurer_glucose",
-        "beurer_ft": "beurer_thermo",
-        "thermometer_sig": "beurer_thermo",
-        "po60": "beurer_po60",
-        "pulse_ox": "beurer_po60",
-        "scale": "beurer_scale",
-        "scale_mixed": "beurer_scale",
-        "ecg": "beurer_ecg",
-        "ecg_custom": "beurer_ecg",
-        "as87": "beurer_as87",
-        "as98": "beurer_as98",
-        "as99": "beurer_as99",
-        "ua651": "and_ua651",
-        "ua_651ble": "and_ua651",
-        "ua651ble": "and_ua651",
-        "masimo": "mightysat",
-        "spo2": "mightysat",
-        "nt100b": "nipro_nt100b",
-        "thermo": "nipro_nt100b",
-        "nipro_thermo": "nipro_nt100b",
-        "nbp": "nipro_nbp",
-        "nbp1": "nipro_nbp",
-        "nbp_1ble": "nipro_nbp",
-        "nmbp": "nipro_nmbp",
-        "nsm": "nipro_nsm1",
-        "nsm1": "nipro_nsm1",
-        "nsm_1ble": "nipro_nsm1",
-        "nipro_cf": "nipro_cf",
-        "cocoron": "nipro_cf",
-        "niprocf": "nipro_cf",
-        "ticd": "thermometer",
-        "thermometer_ticd": "thermometer",
-        "fora": "fora6",
-        "hem-7143t1": "hem7143t1",
-        "hem_7143t1": "hem7143t1",
-        "generic": "re_generic",
-        "re": "re_generic",
-    }
-    key = aliases.get(key, key)
+    key = profile_id.strip().lower()
     if key not in PROFILES:
         known = ", ".join(sorted(PROFILES))
         raise KeyError(f"Unknown profile '{profile_id}'. Known: {known}")

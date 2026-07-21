@@ -12,8 +12,11 @@ from medical_ble_toolkit.core.registry import register
 
 
 class ThermoPlugin(DevicePlugin):
+    """
+    Tier-1 support for Nipro NT-100B (thermometer).
+    """
+
     brand_id = "thermo"
-    aliases = ("thermometer", "nipro_nt100b", "nipro_nsm1")
     device_class = DeviceClass.WINDOWED
     priority_rank = 70
 

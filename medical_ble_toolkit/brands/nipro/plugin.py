@@ -20,8 +20,12 @@ from medical_ble_toolkit.core.registry import register
 
 
 class NiproPlugin(DevicePlugin):
+    """
+    Tier-1 support for Nipro NBP-1BLE (blood pressure).
+    Uses the companion app's backend BLP module for exact compatibility.
+    """
+
     brand_id = "nipro"
-    aliases = ("nipro_nbp", "nipro_nmbp", "nipro_cf", "nipro_companion")
     device_class = DeviceClass.WINDOWED
     priority_rank = 30
 

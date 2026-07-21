@@ -36,13 +36,6 @@ def reset_db(path: Path = DB_PATH) -> None:
             conn.execute("DELETE FROM sqlite_sequence")
         except sqlite3.OperationalError:
             pass
-    try:
-        export_paired_devices(path)
-    except OSError:
-        pass
-
-
-PAIRED_EXPORT_PATH = DATA_DIR / "paired_devices.json"
 
 
 def init_db(path: Path = DB_PATH) -> None:
@@ -52,14 +45,13 @@ def init_db(path: Path = DB_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS devices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id TEXT NOT NULL,
                 brand TEXT NOT NULL,
                 model TEXT,
                 mac TEXT NOT NULL UNIQUE,
                 name TEXT,
-                company TEXT,
                 paired INTEGER NOT NULL DEFAULT 0,
                 last_seen TEXT,
-                notes TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -122,69 +114,6 @@ def init_db(path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_devices_brand ON devices(brand);
             """
         )
-    migrate_brand_ids(path)
-    export_paired_devices(path)
-
-
-def migrate_brand_ids(path: Path = DB_PATH) -> int:
-    """
-    One-time / startup normalize of legacy brand ids in SQLite.
-
-    Lab DB used thermo / and for Tier-1 Nipro meters; hub policy expects
-    nipro_nt100b / nipro_nbp.
-    """
-    if not Path(path).is_file():
-        return 0
-    n = 0
-    with connect(path) as conn:
-        for sql in (
-            "UPDATE devices SET brand='nipro_nt100b' "
-            "WHERE lower(brand) IN ('thermo','thermometer','nt100b')",
-            "UPDATE devices SET brand='nipro_nbp' "
-            "WHERE lower(brand)='and' AND ("
-            "  upper(ifnull(model,'')) LIKE '%NBP%' OR "
-            "  upper(ifnull(name,'')) LIKE '%NBP%'"
-            ")",
-            "UPDATE devices SET brand='masimo' "
-            "WHERE lower(brand) IN ('mightysat','spo2')",
-        ):
-            cur = conn.execute(sql)
-            n += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
-    return n
-
-
-def export_paired_devices(path: Path = DB_PATH) -> Path:
-    """
-    Mirror SQLite devices → data/paired_devices.json (human backup).
-
-    SQLite remains source of truth for the hub roster.
-    """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    devices: List[Dict[str, Any]] = []
-    if Path(path).is_file():
-        with connect(path) as conn:
-            rows = conn.execute(
-                "SELECT brand, model, mac, name, paired FROM devices "
-                "ORDER BY updated_at DESC"
-            ).fetchall()
-            for r in rows:
-                devices.append(
-                    {
-                        "mac": (r["mac"] or "").upper(),
-                        "name": r["name"] or "",
-                        "brand": r["brand"] or "",
-                        "model": r["model"] or "",
-                        "paired": bool(r["paired"]),
-                    }
-                )
-    payload = {
-        "version": 1,
-        "updated_at": _now(),
-        "devices": devices,
-    }
-    out = PAIRED_EXPORT_PATH
-    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return out
 
 
 @contextmanager
@@ -210,13 +139,12 @@ def connect(path: Path = DB_PATH) -> Iterator[sqlite3.Connection]:
 
 def upsert_device(
     *,
+    profile_id: str,
     brand: str,
     mac: str,
     model: str = "",
     name: str = "",
-    company: str = "",
     paired: Optional[bool] = None,
-    notes: str = "",
 ) -> Dict[str, Any]:
     mac_u = (mac or "").strip().upper()
     now = _now()
@@ -226,11 +154,10 @@ def upsert_device(
         ).fetchone()
         if row:
             fields = {
+                "profile_id": profile_id or row["profile_id"],
                 "brand": brand or row["brand"],
                 "model": model or row["model"] or "",
                 "name": name or row["name"] or "",
-                "company": company or row["company"] or "",
-                "notes": notes if notes else (row["notes"] or ""),
                 "last_seen": now,
                 "updated_at": now,
             }
@@ -239,17 +166,16 @@ def upsert_device(
             conn.execute(
                 """
                 UPDATE devices SET
-                    brand=?, model=?, name=?, company=?, notes=?,
+                    profile_id=?, brand=?, model=?, name=?,
                     last_seen=?, updated_at=?,
                     paired=COALESCE(?, paired)
                 WHERE mac=?
                 """,
                 (
+                    fields["profile_id"],
                     fields["brand"],
                     fields["model"],
                     fields["name"],
-                    fields["company"],
-                    fields["notes"],
                     fields["last_seen"],
                     fields["updated_at"],
                     fields.get("paired"),
@@ -260,18 +186,17 @@ def upsert_device(
             conn.execute(
                 """
                 INSERT INTO devices
-                    (brand, model, mac, name, company, paired, last_seen, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (profile_id, brand, model, mac, name, paired, last_seen, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    profile_id,
                     brand,
                     model or "",
                     mac_u,
                     name or "",
-                    company or "",
                     1 if paired else 0,
                     now,
-                    notes or "",
                     now,
                     now,
                 ),

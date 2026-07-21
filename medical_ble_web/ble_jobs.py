@@ -17,7 +17,7 @@ _EXPERIMENTS = Path(__file__).resolve().parent.parent
 if str(_EXPERIMENTS) not in sys.path:
     sys.path.insert(0, str(_EXPERIMENTS))
 
-from brands import get_brand, resolve_profile_id  # noqa: E402
+from brands import get_brand  # noqa: E402
 import db  # noqa: E402
 import medical_ble_toolkit.brands  # noqa: E402
 
@@ -358,21 +358,26 @@ async def job_pair(
     name: str = "",
     repair: bool = False,
 ) -> Dict[str, Any]:
-    brand = get_brand(brand_id)
-    if not brand:
-        raise ValueError(f"Unknown brand: {brand_id}")
+    # We kept the param name "brand_id" for backward compatibility with the HTTP route,
+    # but the UI actually sends the `profile_id` (e.g. "nipro_nt100b", "mightysat").
+    profile_id = brand_id
+    from brands import get_brand
+    brand_info = get_brand(profile_id)
+    if not brand_info:
+        raise ValueError(f"Unknown profile: {profile_id}")
 
-    # Always store canonical id (thermo→nipro_nt100b, etc.)
-    brand_id = brand["id"]
-    model = model or brand.get("default_model") or ""
+    from medical_ble_toolkit.profiles import get_profile
+    profile = get_profile(profile_id)
+    
+    model = model or brand_info.get("default_model") or ""
     mac_u = mac.strip().upper()
-    adv_name = (name or model or brand.get("default_model") or "").strip()
-    profile_id = resolve_profile_id(brand, model)
+    adv_name = (name or model or brand_info.get("default_model") or "").strip()
+    
     device = db.upsert_device(
-        brand=brand_id,
+        profile_id=profile_id,
+        brand=brand_info.get("company", ""),
         mac=mac_u,
         model=model,
-        company=brand.get("company", ""),
         name=adv_name or model,
     )
     sid = db.start_session(
@@ -383,32 +388,32 @@ async def job_pair(
     try:
         # Pause hub hunt so BlueZ is free for OS pair / GATT
         async with _pause_hub_for_manual("repair" if repair else "pair"):
-            if brand.get("is_omron"):
+            if brand_info.get("is_omron"):
                 # Side-effect import registers OmronPlugin (see brands/__init__.py)
                 import medical_ble_toolkit.brands  # noqa: F401
                 from medical_ble_toolkit.core.registry import get_plugin
 
-                await get_plugin("omron").pair(mac_u, model, force_rebind=repair)
+                await get_plugin(profile.brand).pair(mac_u, model, force_rebind=repair)
             else:
                 await _generic_pair(
-                    brand_id=brand_id,
+                    brand_id=profile.brand,
                     profile_id=profile_id,
                     mac=mac_u,
                     model=model,
                     force_rebind=repair,
                 )
         db.upsert_device(
-            brand=brand_id,
+            profile_id=profile_id,
+            brand=brand_info.get("company", ""),
             mac=mac_u,
             model=model,
-            company=brand.get("company", ""),
             name=adv_name or model,
             paired=True,
         )
         # Nipro companion registry (exact name + CheckPairing id)
-        if brand.get("is_nipro") or brand_id.startswith("nipro") or brand_id == "masimo":
+        if brand_info.get("is_nipro") or profile_id.startswith("nipro") or profile_id == "mightysat":
             try:
-                if brand_id == "masimo":
+                if profile_id == "mightysat":
                     from medical_ble_toolkit.brands.nipro.registry import register_meter
 
                     register_meter(
@@ -421,13 +426,9 @@ async def job_pair(
                 else:
                     from medical_ble_toolkit.core.registry import get_plugin
                     # The plugin registers the meter during pair()
-                    await get_plugin("nipro").pair(mac_u, profile_id)
+                    await get_plugin(profile.brand).pair(mac_u, profile_id)
             except Exception as exc:  # noqa: BLE001
                 log.warning("nipro registry register skip: %s", exc)
-        try:
-            db.export_paired_devices()
-        except Exception as exc:  # noqa: BLE001
-            log.debug("paired export: %s", exc)
         db.end_session(sid, "ok")
         out: Dict[str, Any] = {
             "ok": True,
@@ -441,19 +442,19 @@ async def job_pair(
             "Pair ONLY with this hub — unpair any phone companion first.",
             "Hub owns the bond; leave Auto-sync ON after Pair.",
         ]
-        if brand.get("is_omron"):
+        if brand_info.get("is_omron"):
             out["next_steps"] = hub_tips + [
                 "Omron: hub dumps history every omron_poll_interval_s "
                 "(default 5 min — edit hub_config.json).",
                 "If FE4A missing: RE-PAIR on hub with cuff flashing P.",
             ]
             await asyncio.sleep(1.5)
-        elif brand.get("is_nipro") or brand_id.startswith("nipro") or brand_id == "thermo":
+        elif brand_info.get("is_nipro") or profile_id.startswith("nipro") or profile_id == "thermo":
             out["next_steps"] = hub_tips + [
                 "Measure on device — hub connects within ~1m05s BLE window.",
                 "No phone; store exact advertised name at Pair.",
             ]
-        elif brand_id == "masimo":
+        elif profile_id == "mightysat":
             out["next_steps"] = hub_tips + [
                 "Put finger in sensor — hub starts full live SpO2 stream on AD.",
             ]
@@ -532,38 +533,35 @@ async def _maybe_ble_lock(exclusive: bool):
 
 async def job_sync(
     *,
-    brand_id: str,
     mac: str,
-    model: str = "",
-    listen_s: float = 30.0,
+    listen_s: float = 60.0,
     on_reading_cb: Optional[Callable[[], None]] = None,
     exclusive_radio: bool = True,
-    stream_good_hold_s: Optional[float] = None,
-    stream_invalid_exit_s: Optional[float] = None,
-    stream_no_data_grace_s: float = 8.0,
-    find_timeout: Optional[float] = None,
+    stream_good_hold_s: float = 20.0,
+    stream_invalid_exit_s: float = 8.0,
+    stream_no_data_grace_s: float = 5.0,
+    find_timeout: float = 12.0,
+    # These legacy kwargs are ignored but kept so UI doesn't crash if it sends them
+    brand_id: str = "",
+    model: str = "",
 ) -> Dict[str, Any]:
-    """
-    One-shot read/sync for the brand; store clinical readings in SQLite.
-
-    exclusive_radio=True  — hold global BLE lock (UI / single-session).
-    exclusive_radio=False — concurrent hub workers (multi BleakClient).
-    stream_*: MightySat hub duty-cycle (valid SpO2 hold / "-" exit).
-    find_timeout: override post-measure BLE hunt (hub passes 0 — MAC known).
-    """
-    brand = get_brand(brand_id)
-    if not brand:
-        raise ValueError(f"Unknown brand: {brand_id}")
-
-    model = model or brand.get("default_model") or ""
     mac_u = mac.strip().upper()
-    device = db.upsert_device(
-        brand=brand_id,
-        mac=mac_u,
-        model=model,
-        company=brand.get("company", ""),
-    )
-    device_id = device.get("id")
+    dev_row = db.get_device_by_mac(mac_u)
+    if not dev_row:
+        raise ValueError(f"Cannot sync unknown device {mac_u} — pair it first.")
+
+    profile_id = dev_row["profile_id"]
+    brand_id = dev_row["brand"]  # Display brand
+
+    from medical_ble_toolkit.profiles import get_profile
+    profile = get_profile(profile_id)
+    plugin_brand = profile.brand
+
+    model = dev_row.get("model") or ""
+    already_paired = bool(dev_row.get("paired"))
+    name_hint = (dev_row.get("name") or model).strip()
+    
+    device_id = dev_row.get("id")
     sid = db.start_session("sync", device_id=device_id)
     stored = 0
     collected: List[Dict[str, Any]] = []
@@ -571,15 +569,15 @@ async def job_sync(
 
     try:
         async with _maybe_ble_lock(exclusive_radio):
-            if brand.get("is_omron"):
+            if plugin_brand == "omron":
                 from medical_ble_toolkit.core.registry import get_plugin
                 sync_result = await get_plugin("omron").run_session(mac_u, model)
                 for r in sync_result.readings:
-                    row = _reading_to_row(r, brand_id)
+                    row = _reading_to_row(r, profile_id)
                     if not _is_clinical(row):
                         continue
                     rid = db.insert_reading(
-                        device_id=device_id, session_id=sid, brand=brand_id,
+                        device_id=device_id, session_id=sid, brand=profile_id,
                         reading_type=row["reading_type"], measured_at=row.get("measured_at"),
                         systolic=row.get("systolic"), diastolic=row.get("diastolic"),
                         pulse_rate=row.get("pulse_rate"), spo2=row.get("spo2"),
@@ -593,18 +591,18 @@ async def job_sync(
                         continue
                     stored += 1
                     collected.append(row)
-            elif brand_id == "beurer":
+            elif plugin_brand == "beurer":
                 from medical_ble_toolkit.core.registry import get_plugin
                 sync_result = await get_plugin("beurer").run_session(mac_u, model)
                 for r in sync_result.readings:
-                    row = _reading_to_row(r, brand_id)
+                    row = _reading_to_row(r, profile_id)
                     if row["reading_type"] == "waveform":
                         continue
                     if _is_clinical(row) or row.get("payload"):
                         rid = db.insert_reading(
                             device_id=device_id,
                             session_id=sid,
-                            brand=brand_id,
+                            brand=profile_id,
                             reading_type=row["reading_type"],
                             measured_at=row.get("measured_at"),
                             systolic=row.get("systolic"),
@@ -626,27 +624,17 @@ async def job_sync(
                     raise RuntimeError(sync_result.detail.get("message") or "Beurer session failed")
             else:
                 from medical_ble_toolkit.core.registry import get_plugin, has_plugin
-                from medical_ble_toolkit.profiles import get_profile
-                from medical_ble_toolkit.common.winrt_errors import os_pair_supported
-
-                profile_id = resolve_profile_id(brand, model)
-
-                dev_row = db.get_device_by_mac(mac_u) or {}
-                already_paired = bool(dev_row.get("paired"))
-                name_hint = (
-                    (dev_row.get("name") or model or brand.get("default_model") or "")
-                ).strip()
-
+                
                 def _live_cb(r: Any) -> None:
                     nonlocal stored
-                    row = _reading_to_row(r, brand_id)
+                    row = _reading_to_row(r, profile_id)
                     if row["reading_type"] == "waveform":
                         return
                     if row["reading_type"] == "meta":
                         return
                     if _is_clinical(row) or row["reading_type"] == "raw":
                         rid = db.insert_reading(
-                            device_id=device_id, session_id=sid, brand=brand_id,
+                            device_id=device_id, session_id=sid, brand=profile_id,
                             reading_type=row["reading_type"], measured_at=row.get("measured_at"),
                             systolic=row.get("systolic"), diastolic=row.get("diastolic"),
                             pulse_rate=row.get("pulse_rate"), spo2=row.get("spo2"),
@@ -663,14 +651,14 @@ async def job_sync(
                             if on_reading_cb:
                                 on_reading_cb()
 
-                if not has_plugin(brand_id):
+                if not has_plugin(plugin_brand):
                     raise BleJobError(
-                        f"No plugin registered for brand '{brand_id}'. "
+                        f"No plugin registered for brand '{plugin_brand}'. "
                         "Cannot sync — add a DevicePlugin for this brand.",
                         code="NO_PLUGIN",
                     )
 
-                sync_result = await get_plugin(brand_id).run_session(
+                sync_result = await get_plugin(plugin_brand).run_session(
                     mac_u, model,
                     on_reading=_live_cb,
                     profile_id=profile_id,
@@ -1243,18 +1231,24 @@ def _cycle_now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _listen_for_brand(brand_id: str, slot_s: float) -> float:
+def _listen_for_brand(profile_id: str, slot_s: float) -> float:
     """How long to listen during a cycle slot (capped by slot)."""
     slot = max(5.0, float(slot_s))
+    from medical_ble_toolkit.profiles import get_profile
+    try:
+        plugin_brand = get_profile(profile_id).brand
+    except KeyError:
+        return min(slot, 30.0)
+
     from medical_ble_toolkit.core.registry import has_plugin, get_plugin
-    if has_plugin(brand_id):
-        return get_plugin(brand_id).listen_s(slot)
-    # Fallback for brands without a plugin yet (masimo, and, thermo)
-    if brand_id == "masimo":
+    if has_plugin(plugin_brand):
+        return get_plugin(plugin_brand).listen_s(slot)
+    
+    if plugin_brand == "masimo":
         return slot
-    if brand_id == "and":
+    if plugin_brand == "and":
         return min(slot, 60.0)
-    if brand_id in ("thermo", "thermometer"):
+    if plugin_brand == "thermo":
         return min(slot, 20.0)
     return min(slot, 30.0)
 
@@ -1294,17 +1288,17 @@ async def job_cycle_start(
 
     roster: List[Dict[str, Any]] = []
     for d in devices:
-        brand_id = (d.get("brand") or "").lower()
-        if brand_id in ("re", "fora"):
+        profile_id = (d.get("profile_id") or "").lower()
+        if profile_id in ("re_generic", "fora6"):
             continue  # not useful for clinical cycle POC
-        if not get_brand(brand_id):
+        if not get_brand(profile_id):
             continue
         roster.append(
             {
                 "mac": (d.get("mac") or "").upper(),
-                "brand": brand_id,
+                "profile_id": profile_id,
+                "brand": d.get("brand") or "",
                 "model": d.get("model") or "",
-                "company": d.get("company") or "",
                 "name": d.get("name") or d.get("model") or "",
             }
         )
@@ -1356,6 +1350,7 @@ async def job_cycle_start(
                         break
 
                     mac = dev["mac"]
+                    profile_id = dev["profile_id"]
                     brand_id = dev["brand"]
                     model = dev["model"]
                     slot_start = _time.monotonic()
@@ -1365,7 +1360,7 @@ async def job_cycle_start(
                             "status": "reading",
                             "index": idx + 1,
                             "current_mac": mac,
-                            "current_brand": brand_id,
+                            "current_brand": profile_id,
                             "current_model": model,
                             "message": (
                                 f"Round {round_i} · {idx + 1}/{len(roster)} · "
@@ -1377,8 +1372,8 @@ async def job_cycle_start(
                     )
                     _push_dashboard(highlight_mac=mac)
                     log.info(
-                        "Cycle slot brand=%s mac=%s slot=%.0fs round=%d",
-                        brand_id,
+                        "Cycle slot profile=%s mac=%s slot=%.0fs round=%d",
+                        profile_id,
                         mac,
                         slot,
                         round_i,
@@ -1386,7 +1381,7 @@ async def job_cycle_start(
 
                     result_row: Dict[str, Any] = {
                         "mac": mac,
-                        "brand": brand_id,
+                        "brand": profile_id,
                         "model": model,
                         "ok": False,
                         "stored": 0,
@@ -1394,7 +1389,7 @@ async def job_cycle_start(
                         "latest": None,
                     }
                     try:
-                        listen = _listen_for_brand(brand_id, slot)
+                        listen = _listen_for_brand(profile_id, slot)
                         last_push = [0.0]
                         def _on_live(mac=mac):
                             now_t = _time.monotonic()
@@ -1404,9 +1399,7 @@ async def job_cycle_start(
                             
                         # History dump / short stream for this device
                         sync_out = await job_sync(
-                            brand_id=brand_id,
                             mac=mac,
-                            model=model,
                             listen_s=listen,
                             on_reading_cb=_on_live,
                         )

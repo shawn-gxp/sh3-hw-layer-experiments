@@ -34,7 +34,7 @@ NIPRO_PROFILES: dict[str, DeviceProfile] = {
 ),
 "nipro_nsm1": DeviceProfile(
     id="nipro_nsm1",
-    brand="nipro",
+    brand="thermo",
     model="NSM-1BLE",
     parser_key="nipro_nsm1",
     name_hints=("NSM-1BLE", "NSM-1"),
@@ -48,7 +48,7 @@ NIPRO_PROFILES: dict[str, DeviceProfile] = {
 ),
 "nipro_nt100b": DeviceProfile(
     id="nipro_nt100b",
-    brand="nipro",
+    brand="thermo",
     model="NT-100B",
     parser_key="nipro_nt100b",
     name_hints=("NT-100B", "NT-100"),
