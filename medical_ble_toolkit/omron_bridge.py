@@ -1,5 +1,5 @@
 """
-Omron brand adapter — facade over in-package ``medical_ble_toolkit.omron_bp``.
+Omron brand adapter — facade over in-package ``medical_ble_toolkit.brands.omron``.
 
 Architecture
 ------------
@@ -37,14 +37,14 @@ log = logging.getLogger("medical_ble.omron")
 
 def _require_omron_bp():
     try:
-        import medical_ble_toolkit.omron_bp as omron_bp  # noqa: F401
-        from medical_ble_toolkit.omron_bp.models.registry import get_profile, list_models
-        from medical_ble_toolkit.omron_bp.pairing.service import pair_device
-        from medical_ble_toolkit.omron_bp.readout.service import read_device_records
-        from medical_ble_toolkit.omron_bp.export.csv_export import write_users_csv
+        import medical_ble_toolkit.brands.omron as omron_bp  # noqa: F401
+        from medical_ble_toolkit.brands.omron.models.registry import get_profile, list_models
+        from medical_ble_toolkit.brands.omron.pairing.service import pair_device
+        from medical_ble_toolkit.brands.omron.readout.service import read_device_records
+        from medical_ble_toolkit.brands.omron.export.csv_export import write_users_csv
     except ImportError as exc:
         raise ImportError(
-            "Omron support requires medical_ble_toolkit.omron_bp "
+            "Omron support requires medical_ble_toolkit.brands.omron "
             "(bundled under medical_ble_toolkit/omron_bp/)."
         ) from exc
     return get_profile, list_models, pair_device, read_device_records, write_users_csv
@@ -79,7 +79,7 @@ def resolve_omron_model(model: str):
 
 async def unpair_omron(address: str) -> None:
     """Remove OS bond for an Omron cuff (BlueZ/WinRT)."""
-    from medical_ble_toolkit.omron_bp.ble.connection import unpair_address
+    from medical_ble_toolkit.brands.omron.ble.connection import unpair_address
 
     log.info("[OMRON] UNPAIR address=%s ts=%s", address, ms_timestamp())
     await unpair_address(address)
@@ -103,7 +103,7 @@ async def pair_omron(
       Remove existing OS bond first (needed when Windows shows the cuff but
       GattSession flaps ACTIVE/CLOSED — stale bond).
     """
-    from medical_ble_toolkit.omron_bp.pairing.service import pair_device as pair_device_fn
+    from medical_ble_toolkit.brands.omron.pairing.service import pair_device as pair_device_fn
 
     profile = resolve_omron_model(model)
     log.info(

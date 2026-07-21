@@ -869,7 +869,7 @@ class MedicalBleClient:
         try:
             if is_linux():
                 # BlueZ needs a pair agent or AuthenticationFailed/Canceled
-                from .omron_bp.ble.connection import pair_client as _omron_pair
+                from .brands.omron.ble.connection import pair_client as _omron_pair
 
                 await _omron_pair(self._client)
             else:

@@ -1,7 +1,7 @@
 """
 Omron BP EEPROM record parser (pure logic — no bleak).
 
-Reuses parsers from in-package ``medical_ble_toolkit.omron_bp``
+Reuses parsers from in-package ``medical_ble_toolkit.brands.omron``
 (models/parsers/*) and maps results into medical_ble_toolkit dataclasses.
 
 Omron does NOT use Bluetooth SIG BLP for history download. Each model has:
@@ -35,17 +35,17 @@ from ..models import (
 # ---------------------------------------------------------------------------
 
 try:
-    from medical_ble_toolkit.omron_bp.models.parsers import (
+    from medical_ble_toolkit.brands.omron.models.parsers import (
         parse_classic_vital_14,
         parse_classic_vital_14_6232_family,
         parse_classic_vital_14_bitpacked,
         parse_classic_vital_16_6401_family,
         parse_vital_16_715x_bitpacked,
     )
-    from medical_ble_toolkit.omron_bp.models.registry import get_profile as omron_get_profile
+    from medical_ble_toolkit.brands.omron.models.registry import get_profile as omron_get_profile
 except ImportError as exc:  # pragma: no cover
     raise ImportError(
-        "Omron support requires medical_ble_toolkit.omron_bp "
+        "Omron support requires medical_ble_toolkit.brands.omron "
         "(bundled under medical_ble_toolkit/omron_bp/)."
     ) from exc
 
