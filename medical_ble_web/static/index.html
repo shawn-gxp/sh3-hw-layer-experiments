@@ -501,36 +501,53 @@
     async function startScan() {
       const btn = document.getElementById('btnScan');
       const st = document.getElementById('scanStatus');
+      const timeoutSec = 8;
       btn.disabled = true;
-      st.innerText = 'Scanning for 8 seconds...';
       document.getElementById('scanResults').classList.add('hidden');
-      
+
+      let left = timeoutSec;
+      const setScanLabel = () => {
+        st.innerText = left > 0
+          ? `Scanning… ${left}s remaining`
+          : 'Still scanning…';
+      };
+      setScanLabel();
+      const timer = setInterval(() => {
+        left -= 1;
+        setScanLabel();
+      }, 1000);
+
       try {
         const res = await fetch('/scan', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ timeout: 8.0 })
+          body: JSON.stringify({ timeout: timeoutSec })
         });
         const data = await res.json();
-        
+
         if (!res.ok) throw new Error(data.detail?.error || 'Scan failed');
-        
+
         st.innerText = `Found ${data.count} devices.`;
         if (data.count > 0) {
           const tbody = document.querySelector('#scanTable tbody');
-          tbody.innerHTML = data.devices.map(d => `
+          tbody.innerHTML = data.devices.map(d => {
+            const mac = d.mac || d.address || '';
+            const rssi = (d.rssi === null || d.rssi === undefined) ? '—' : `${d.rssi} dBm`;
+            const name = (d.name || '-').replace(/</g, '&lt;');
+            return `
             <tr>
-              <td style="font-family:monospace">${d.address}</td>
-              <td>${d.name || '-'}</td>
-              <td>${d.rssi} dBm</td>
-              <td><button class="secondary" onclick="selectForPair('${d.address}')">Select</button></td>
-            </tr>
-          `).join('');
+              <td style="font-family:monospace">${mac}</td>
+              <td>${name}</td>
+              <td>${rssi}</td>
+              <td><button class="secondary" onclick="selectForPair('${mac}')">Select</button></td>
+            </tr>`;
+          }).join('');
           document.getElementById('scanResults').classList.remove('hidden');
         }
       } catch (e) {
         st.innerText = e.message;
       } finally {
+        clearInterval(timer);
         btn.disabled = false;
       }
     }

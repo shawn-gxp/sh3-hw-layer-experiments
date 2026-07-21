@@ -154,6 +154,22 @@ async def _discover_once(timeout: float) -> Any:
         return await BleakScanner.discover(timeout=timeout, return_adv=True)
 
 
+class _ScannedBLEDevice(BLEDevice):
+    """BLEDevice plus advertisement RSSI (Bleak 0.21+ dropped Device.rssi)."""
+
+    __slots__ = ("rssi",)
+
+    def __init__(
+        self,
+        address: str,
+        name: Optional[str],
+        details: Any,
+        rssi: Optional[int] = None,
+    ) -> None:
+        super().__init__(address, name, details)
+        self.rssi = rssi
+
+
 async def scan_devices(
     profile: Optional[DeviceProfile] = None,
     timeout: float = 8.0,
@@ -173,6 +189,9 @@ async def scan_devices(
 
     Returns an empty list on total scanner failure (never crashes the CLI);
     callers can still prompt for a MAC — connect uses BLEDevice (no scan).
+
+    Each result is a BLEDevice with ``.rssi`` set from AdvertisementData when
+    available (native Bleak BLEDevice no longer carries RSSI).
     """
     log.info(
         "Scanning for BLE devices (timeout=%.1fs, platform=%s, retries=%d)…",
@@ -276,9 +295,24 @@ async def scan_devices(
         name = dev.name or (getattr(adv, "local_name", None) if adv else None) or ""
         mfg = (getattr(adv, "manufacturer_data", {}) or {}) if adv else {}
         rssi = getattr(adv, "rssi", None) if adv else None
+        if rssi is None:
+            # Fallbacks: older bleak on device, or OS details dict
+            rssi = getattr(dev, "rssi", None)
+        if rssi is not None:
+            try:
+                rssi = int(rssi)
+            except (TypeError, ValueError):
+                rssi = None
+
+        hit = _ScannedBLEDevice(
+            address=getattr(dev, "address", None) or str(addr),
+            name=name or None,
+            details=getattr(dev, "details", None),
+            rssi=rssi,
+        )
 
         if profile is None:
-            results.append(dev)
+            results.append(hit)
             log.info("  FOUND  %s  rssi=%s  name=%r", addr, rssi, name)
             continue
 
@@ -291,7 +325,7 @@ async def scan_devices(
             company_ok = any(cid in mfg for cid in profile.company_ids)
 
         if name_ok or company_ok or (not profile.name_hints and not profile.company_ids):
-            results.append(dev)
+            results.append(hit)
             log.info(
                 "  MATCH  %s  rssi=%s  name=%r  mfg_ids=%s",
                 addr,

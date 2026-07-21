@@ -271,11 +271,19 @@ async def job_scan(
 
     out: List[Dict[str, Any]] = []
     for d in devices or []:
+        mac = (getattr(d, "address", "") or "").upper()
+        rssi = getattr(d, "rssi", None)
+        if rssi is not None:
+            try:
+                rssi = int(rssi)
+            except (TypeError, ValueError):
+                rssi = None
         out.append(
             {
-                "mac": (getattr(d, "address", "") or "").upper(),
+                "mac": mac,
+                "address": mac,  # alias for older UI / clients
                 "name": (getattr(d, "name", None) or "") or "(no name)",
-                "rssi": getattr(d, "rssi", None),
+                "rssi": rssi,
             }
         )
     # Prefer named / medical-looking first for UI
