@@ -625,168 +625,64 @@ async def job_sync(
                 if not sync_result.ok and stored == 0:
                     raise RuntimeError(sync_result.detail.get("message") or "Beurer session failed")
             else:
-                from medical_ble_toolkit.ble_client import MedicalBleClient
-                from medical_ble_toolkit.common.winrt_errors import os_pair_supported
+                from medical_ble_toolkit.core.registry import get_plugin, has_plugin
                 from medical_ble_toolkit.profiles import get_profile
+                from medical_ble_toolkit.common.winrt_errors import os_pair_supported
 
                 profile_id = resolve_profile_id(brand, model)
-                profile = get_profile(profile_id)
-                is_thermo = brand_id in (
-                    "thermo",
-                    "thermometer",
-                    "nipro_nt100b",
-                    "nipro_nsm1",
-                )
-                is_nipro_bp = brand_id in ("nipro_nbp", "nipro_nmbp") or profile_id in (
-                    "nipro_nbp",
-                    "nipro_nmbp",
-                )
-                is_nipro_cf = brand_id == "nipro_cf" or profile_id == "nipro_cf"
-                # Session length by brand (companion defaults ~60s receive)
-                if brand_id == "masimo":
-                    # Stream while finger on; cap so hub can return to hunt
-                    duration = max(20.0, min(float(listen_s), 180.0))
-                elif is_thermo or is_nipro_bp or is_nipro_cf or brand_id == "and":
-                    # Companion receive timeout ~60s; quiet-end finishes earlier
-                    duration = max(45.0, float(listen_s))
-                else:
-                    duration = listen_s
 
-                # Never re-pair mid post-measure window (eats BLE time).
-                # NBP still needs OS bond once — soft pair only if never paired.
                 dev_row = db.get_device_by_mac(mac_u) or {}
                 already_paired = bool(dev_row.get("paired"))
-                if is_thermo or brand_id in ("nipro_nt100b", "thermo", "nipro_nbp"):
-                    do_pair = False
-                elif profile_id in ("nipro_nmbp", "and_ua651"):
-                    do_pair = os_pair_supported() and not already_paired
-                elif brand_id.startswith("nipro") or brand.get("is_nipro"):
-                    do_pair = os_pair_supported() and not already_paired
-                else:
-                    do_pair = os_pair_supported() and not already_paired
+                name_hint = (
+                    (dev_row.get("name") or model or brand.get("default_model") or "")
+                ).strip()
 
                 def _live_cb(r: Any) -> None:
                     nonlocal stored
                     row = _reading_to_row(r, brand_id)
                     if row["reading_type"] == "waveform":
                         return
-                    if brand_id == "and" and not _is_clinical(row):
+                    if row["reading_type"] == "meta":
                         return
-                    if (is_thermo or is_nipro_bp or is_nipro_cf) and not _is_clinical(
-                        row
-                    ):
-                        return
-                    if _is_clinical(row) or row["reading_type"] in ("meta", "raw"):
-                        if row["reading_type"] == "meta":
-                            return
+                    if _is_clinical(row) or row["reading_type"] == "raw":
                         rid = db.insert_reading(
-                            device_id=device_id,
-                            session_id=sid,
-                            brand=brand_id,
-                            reading_type=row["reading_type"],
-                            measured_at=row.get("measured_at"),
-                            systolic=row.get("systolic"),
-                            diastolic=row.get("diastolic"),
-                            pulse_rate=row.get("pulse_rate"),
-                            spo2=row.get("spo2"),
+                            device_id=device_id, session_id=sid, brand=brand_id,
+                            reading_type=row["reading_type"], measured_at=row.get("measured_at"),
+                            systolic=row.get("systolic"), diastolic=row.get("diastolic"),
+                            pulse_rate=row.get("pulse_rate"), spo2=row.get("spo2"),
                             perfusion_index=row.get("perfusion_index"),
-                            temperature=row.get("temperature"),
-                            glucose_mg_dl=row.get("glucose_mg_dl"),
-                            payload=row.get("payload"),
-                            raw_hex=row.get("raw_hex") or "",
+                            temperature=row.get("temperature"), glucose_mg_dl=row.get("glucose_mg_dl"),
+                            payload=row.get("payload"), raw_hex=row.get("raw_hex") or "",
                             dedupe=_is_clinical(row),
                         )
                         if _is_clinical(row):
                             collected.append(row)
                             if rid is not None:
                                 stored += 1
-                                # Always refresh dashboard on new clinical row
                                 _push_dashboard(highlight_mac=mac_u)
                             if on_reading_cb:
                                 on_reading_cb()
 
-                # Post-measure: hub already saw AD → prefer direct MAC connect.
-                # Long find_window + parallel hub scan → BlueZ InProgress.
-                name_hint = (
-                    (dev_row.get("name") or model or brand.get("default_model") or "")
-                ).strip()
-                connect_retries = 2 if not is_thermo else 1
-                connect_to = 30.0 if is_thermo else 35.0
-                if find_timeout is not None:
-                    find_to = max(0.0, float(find_timeout))
-                else:
-                    find_to = 0.0
-                if (
-                    brand.get("is_nipro")
-                    or brand_id.startswith("nipro")
-                    or brand_id in ("masimo", "thermo")
-                ):
-                    from medical_ble_toolkit.brands.nipro import post_measure as pm
-
-                    if brand_id != "masimo":
-                        duration = max(duration, pm.receive_s_for(profile_id))
-                    # Manual UI Sync: short hunt. Hub passes find_timeout=0.
-                    if find_timeout is None:
-                        find_to = (
-                            12.0
-                            if (is_nipro_bp or is_thermo or brand_id == "masimo")
-                            else 0.0
-                        )
-                    connect_retries = 4 if find_to > 0 else max(connect_retries, 3)
-                    connect_to = 12.0 if find_to > 0 else connect_to
-                    log.info(
-                        "[POST-MEASURE] web sync find=%.0fs receive=%.0fs profile=%s "
-                        "pair=%s exclusive=%s",
-                        find_to,
-                        duration,
-                        profile_id,
-                        do_pair,
-                        exclusive_radio,
+                if not has_plugin(brand_id):
+                    raise BleJobError(
+                        f"No plugin registered for brand '{brand_id}'. "
+                        "Cannot sync — add a DevicePlugin for this brand.",
+                        code="NO_PLUGIN",
                     )
 
-                client = MedicalBleClient(
-                    address=mac_u,
-                    profile=profile,
-                    pair=do_pair,
-                    connect_retries=connect_retries,
+                sync_result = await get_plugin(brand_id).run_session(
+                    mac_u, model,
                     on_reading=_live_cb,
-                    auto_dispatch=profile_id in ("re_generic", "fora6"),
-                    find_timeout=find_to,
+                    profile_id=profile_id,
+                    listen_s=listen_s,
+                    find_timeout=find_timeout,
+                    already_paired=already_paired,
                     name_hint=name_hint,
-                )
-                from medical_ble_toolkit.brands.nipro import post_measure as pm2
-
-                # MightySat: no quiet-end (stream until radio drops / duration)
-                # Hub passes stream_good_hold_s / stream_invalid_exit_s for duty-cycle.
-                if brand_id == "masimo" or profile_id == "mightysat":
-                    qt = 0.0
-                else:
-                    qt = pm2.quiet_s_for(profile_id)
-                await client.run(
-                    duration=duration,
-                    connect_timeout=connect_to,
-                    quiet_timeout=qt,
                     stream_good_hold_s=stream_good_hold_s,
                     stream_invalid_exit_s=stream_invalid_exit_s,
                     stream_no_data_grace_s=stream_no_data_grace_s,
                 )
-                listen_end = getattr(client, "_listen_end_reason", "") or ""
-                # Ensure Nipro registry has exact name for hands-free
-                if brand.get("is_nipro") or brand_id.startswith("nipro"):
-                    try:
-                        from medical_ble_toolkit.brands.nipro.registry import register_meter
-
-                        register_meter(
-                            device_id=mac_u,
-                            name=(
-                                (dev_row.get("name") or model or brand.get("default_model") or "")
-                            ).strip(),
-                            profile_id=profile_id,
-                            address=mac_u,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.debug("nipro registry upsert: %s", exc)
-                # Data is now inserted via _live_cb during the run
+                listen_end = sync_result.detail.get("listen_end", "")
 
         latest = _pick_newest(collected)
         db.end_session(sid, "ok")
