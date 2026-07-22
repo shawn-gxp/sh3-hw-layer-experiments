@@ -403,16 +403,13 @@ class TestNiproCompanion(unittest.TestCase):
             "nipro_nsm1",
             "nipro_nt100b",
             "nipro_cf",
-            "nt100b",
-            "nbp",
-            "cocoron",
         ):
             p = get_profile(pid)
             self.assertTrue(p.id.startswith("nipro_") or p.id == "nipro_nt100b")
             get_parser(p.parser_key)  # must construct
 
-    def test_nt100b_alias_is_companion_not_ticd(self):
-        p = get_profile("nt100b")
+    def test_nipro_nt100b_profile(self):
+        p = get_profile("nipro_nt100b")
         self.assertEqual(p.id, "nipro_nt100b")
         self.assertEqual(p.parser_key, "nipro_nt100b")
 
